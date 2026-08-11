@@ -9,7 +9,7 @@ always reflects the latest completed phase.
 - Repository scaffold, license, ignore rules
 - Roadmap and documentation skeleton
 
-## Phase 2 — Infrastructure as Code (Terraform)
+## Phase 2 — Infrastructure as Code (Terraform) ✅
 
 - Remote state backend (Azure Storage + state locking)
 - Modules: network, AKS, ACR, Key Vault, managed identity, Azure Policy
@@ -17,7 +17,7 @@ always reflects the latest completed phase.
 - Secure-by-default settings: private endpoints, RBAC-only Key Vault,
   Microsoft Entra–integrated AKS, no local auth on ACR
 
-## Phase 3 — Infrastructure Security Pipeline
+## Phase 3 — Infrastructure Security Pipeline ✅
 
 - `terraform fmt` / `terraform validate` gates
 - TFLint with azurerm ruleset
@@ -25,7 +25,7 @@ always reflects the latest completed phase.
 - Azure Policy compliance validation against the target subscription
 - Reusable Azure DevOps step templates for every control
 
-## Phase 4 — Application Security Pipeline
+## Phase 4 — Application Security Pipeline ✅
 
 - Sample containerized workload (FastAPI) with tests
 - GitLeaks secret scanning (full history)
@@ -34,7 +34,7 @@ always reflects the latest completed phase.
 - Container image scanning (Trivy) with severity thresholds
 - OSS license compliance gate
 
-## Phase 5 — Deployment Security
+## Phase 5 — Deployment Security ✅
 
 - Azure DevOps Environments with manual approvals and branch control checks
 - Release gates (scan results must be clean before promotion)
@@ -43,7 +43,7 @@ always reflects the latest completed phase.
 - Container image signing with Cosign (keyless) and admission verification
 - Kubernetes hardening: non-root, read-only rootfs, NetworkPolicy, resource limits
 
-## Phase 6 — Documentation & Diagrams
+## Phase 6 — Documentation & Diagrams ✅
 
 - Architecture and pipeline diagrams (Mermaid)
 - Security control matrix mapped to the pipeline stages
