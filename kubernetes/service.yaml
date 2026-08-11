@@ -1,0 +1,18 @@
+# ClusterIP only — the API is reachable inside the cluster; external
+# exposure would be an explicit, reviewed ingress change, not a default.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-api
+  namespace: inventory
+  labels:
+    app.kubernetes.io/name: inventory-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: inventory-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,77 @@
+# Deployment steps: verify signature → substitute environment values →
+# apply manifests with kubelogin (Entra ID auth — the cluster has no local
+# accounts to log into).
+#
+# The signature verification here is the release gate that binds the whole
+# chain together: only an image built, scanned, and signed by THIS pipeline
+# (matched on the Rekor certificate identity) can be applied.
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: clusterName
+    type: string
+  - name: imageDigestRef
+    type: string
+  - name: keyVaultName
+    type: string
+  - name: workloadIdentityClientId
+    type: string
+  - name: certificateIdentity
+    type: string   # expected Fulcio certificate identity of the signing pipeline
+  - name: cosignVersion
+    type: string
+    default: 'v2.4.1'
+
+steps:
+  - script: |
+      set -euo pipefail
+      curl -sSLo /usr/local/bin/cosign \
+        "https://github.com/sigstore/cosign/releases/download/${{ parameters.cosignVersion }}/cosign-linux-amd64"
+      chmod +x /usr/local/bin/cosign
+    displayName: 'Install Cosign'
+
+  - task: AzureCLI@2
+    displayName: 'Release gate: verify artifact signature'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        az acr login --name "$(echo '${{ parameters.imageDigestRef }}' | cut -d. -f1 | cut -d/ -f1)"
+
+        cosign verify \
+          --certificate-identity "${{ parameters.certificateIdentity }}" \
+          --certificate-oidc-issuer "https://vstoken.dev.azure.com" \
+          '${{ parameters.imageDigestRef }}'
+        echo "Signature verified — image provenance is this pipeline."
+
+  - task: AzureCLI@2
+    displayName: 'Deploy to AKS (kubelogin, Entra ID auth)'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        sudo az aks install-cli   # kubectl + kubelogin
+
+        az aks get-credentials \
+          --resource-group '${{ parameters.resourceGroup }}' \
+          --name '${{ parameters.clusterName }}' \
+          --overwrite-existing
+        kubelogin convert-kubeconfig -l azurecli
+
+        export IMAGE_REF='${{ parameters.imageDigestRef }}'
+        export KEY_VAULT_NAME='${{ parameters.keyVaultName }}'
+        export WORKLOAD_IDENTITY_CLIENT_ID='${{ parameters.workloadIdentityClientId }}'
+        export TENANT_ID=$(az account show --query tenantId -o tsv)
+
+        cd "$(Build.SourcesDirectory)/kubernetes"
+        for manifest in namespace serviceaccount secretproviderclass deployment service networkpolicy; do
+          envsubst < "${manifest}.yaml" | kubectl apply -f -
+        done
+
+        kubectl -n inventory rollout status deployment/inventory-api --timeout=180s

@@ -1,0 +1,45 @@
+# Control: artifact signing (Cosign, keyless).
+# The pushed image digest is signed using short-lived certificates from the
+# Sigstore Fulcio CA, bound to THIS pipeline's OIDC identity; the signature
+# is recorded in the Rekor transparency log. There is no signing key to
+# store, leak, or rotate. The deploy stage refuses any image whose signature
+# does not verify back to this pipeline identity — a tampered or out-of-band
+# image cannot be promoted.
+parameters:
+  - name: imageRef
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: cosignVersion
+    type: string
+    default: 'v2.4.1'
+
+steps:
+  - script: |
+      set -euo pipefail
+      curl -sSLo /usr/local/bin/cosign \
+        "https://github.com/sigstore/cosign/releases/download/${{ parameters.cosignVersion }}/cosign-linux-amd64"
+      chmod +x /usr/local/bin/cosign
+      cosign version
+    displayName: 'Install Cosign (pinned ${{ parameters.cosignVersion }})'
+
+  - task: AzureCLI@2
+    displayName: 'Sign image digest (keyless, transparency-logged)'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        az acr login --name "$(echo '${{ parameters.imageRef }}' | cut -d. -f1 | cut -d/ -f1)"
+
+        # Resolve tag -> digest and sign the DIGEST: tags are mutable,
+        # digests are not. Signing a tag would sign a moving target.
+        DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' '${{ parameters.imageRef }}')
+        echo "Signing: $DIGEST_REF"
+
+        cosign sign --yes "$DIGEST_REF"
+
+        # Hand the digest reference to the deploy stages.
+        echo "##vso[task.setvariable variable=signedDigestRef;isOutput=true]$DIGEST_REF"
+    name: sign

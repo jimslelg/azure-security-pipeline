@@ -3,8 +3,19 @@
 #
 #   SecurityScan   gitleaks · SCA · SAST · licenses   (parallel jobs, fail fast)
 #   Build          docker build → trivy image scan → push (main only, OIDC)
+#   Sign           cosign keyless signature on the pushed DIGEST
+#   DeployDev      signature-verified deploy to dev (environment-gated)
+#   DeployProd     manual approval + business-hours check, then verified deploy
 #
-# Phase 5 extends this file with signing and the gated deployment stages.
+# Deployment security model:
+#   - ADO Environments 'app-dev' / 'app-prod' carry the human controls:
+#     approvals, branch control (main only), and exclusive lock. They are
+#     configured on the Environment resource so they cannot be edited away
+#     in a PR to this file.
+#   - Every deploy stage re-verifies the cosign signature before kubectl
+#     touches the cluster: what runs is exactly what was scanned and signed.
+#   - All cloud access is OIDC-federated; the cluster itself only accepts
+#     Entra ID identities (local accounts disabled).
 
 trigger:
   branches:
@@ -32,6 +43,17 @@ variables:
     value: '$(Build.SourceVersion)'   # immutable, traceable to the exact commit
   - name: imageRef
     value: '$(acrLoginServer)/$(imageRepository):$(imageTag)'
+  - name: resourceGroup
+    value: 'rg-azsecpipe-dev'
+  - name: clusterName
+    value: 'aks-azsecpipe-dev'
+  - name: keyVaultName
+    value: 'kv-azsecpipe-dev'          # actual name carries a random suffix; resolve from TF outputs in real use
+  - name: workloadIdentityClientId
+    value: ''                          # injected from a variable group fed by Terraform outputs
+  - name: signingIdentity
+    # Fulcio certificate identity of this pipeline's federated service connection.
+    value: 'sc://jimslelg/azure-security-pipeline/sc-azsecpipe-oidc'
 
 stages:
   # ── Stage 1: four independent security gates, run in parallel ────────────
@@ -94,3 +116,84 @@ stages:
                 docker push "$(imageRef)"
             env:
               ACR: $(acrLoginServer)
+
+  # ── Stage 3: sign the pushed digest (keyless, transparency-logged) ───────
+  - stage: Sign
+    displayName: 'Sign Artifact'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: sign_image
+        displayName: 'cosign sign (keyless)'
+        steps:
+          - script: docker pull "$(imageRef)"
+            displayName: 'Pull pushed image (resolve digest)'
+          - template: templates/deploy/cosign-sign.yml
+            parameters:
+              imageRef: '$(imageRef)'
+              serviceConnection: '$(serviceConnection)'
+
+  # ── Stage 4: deploy to dev — signature re-verified at the door ───────────
+  - stage: DeployDev
+    displayName: 'Deploy · dev'
+    dependsOn: Sign
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      signedDigestRef: $[ stageDependencies.Sign.sign_image.outputs['sign.signedDigestRef'] ]
+    jobs:
+      - deployment: deploy_dev
+        displayName: 'verified deploy (dev)'
+        # 'app-dev' Environment: branch control (main only) + exclusive lock.
+        environment: 'app-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: templates/deploy/deploy-aks.yml
+                  parameters:
+                    serviceConnection: '$(serviceConnection)'
+                    resourceGroup: '$(resourceGroup)'
+                    clusterName: '$(clusterName)'
+                    imageDigestRef: '$(signedDigestRef)'
+                    keyVaultName: '$(keyVaultName)'
+                    workloadIdentityClientId: '$(workloadIdentityClientId)'
+                    certificateIdentity: '$(signingIdentity)'
+
+  # ── Stage 5: production — human approval + gates, then verified deploy ───
+  - stage: DeployProd
+    displayName: 'Deploy · prod'
+    dependsOn:
+      - Sign
+      - DeployDev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      signedDigestRef: $[ stageDependencies.Sign.sign_image.outputs['sign.signedDigestRef'] ]
+      resourceGroup: 'rg-azsecpipe-prod'
+      clusterName: 'aks-azsecpipe-prod'
+      keyVaultName: 'kv-azsecpipe-prod'
+    jobs:
+      - deployment: deploy_prod
+        displayName: 'verified deploy (prod)'
+        # 'app-prod' Environment carries the release gates (configured on the
+        # resource, not editable from this file):
+        #   - manual approval by the service owners group (min 1, requester
+        #     cannot approve their own change — separation of duties)
+        #   - branch control: only refs/heads/main
+        #   - business-hours check window
+        #   - exclusive lock: one prod deployment at a time
+        environment: 'app-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: templates/deploy/deploy-aks.yml
+                  parameters:
+                    serviceConnection: '$(serviceConnection)'
+                    resourceGroup: '$(resourceGroup)'
+                    clusterName: '$(clusterName)'
+                    imageDigestRef: '$(signedDigestRef)'
+                    keyVaultName: '$(keyVaultName)'
+                    workloadIdentityClientId: '$(workloadIdentityClientId)'
+                    certificateIdentity: '$(signingIdentity)'

@@ -1,0 +1,15 @@
+# Namespace with Pod Security Standards pinned to 'restricted' — the
+# strictest built-in profile. Pods that run as root, escalate privileges,
+# use hostPath/hostNetwork, or skip seccomp are REJECTED at admission,
+# independent of anything the pipeline does. Defense in depth with the
+# Azure Policy add-on, which enforces overlapping rules cluster-wide.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inventory
+  labels:
+    app.kubernetes.io/name: inventory
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

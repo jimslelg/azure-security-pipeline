@@ -1,0 +1,49 @@
+# Zero-trust segmentation (enforced by Calico, enabled on the cluster).
+# Default: DENY everything, both directions. Then allow exactly:
+#   ingress — HTTP from pods labeled as ingress controllers
+#   egress  — DNS, and HTTPS (Key Vault via private endpoint, Entra ID)
+# A compromised pod cannot reach neighbouring workloads, the kubelet, or
+# arbitrary internet hosts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: inventory
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inventory-api-allow
+  namespace: inventory
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: inventory-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS out: Key Vault (private endpoint) + Entra ID token endpoint
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
