@@ -1,0 +1,42 @@
+# Control: SAST via SonarQube.
+# Static analysis of first-party code: injection sinks, hardcoded credentials,
+# weak crypto, tainted data flows. The build BREAKS on the server-side quality
+# gate — thresholds (0 new vulnerabilities, security hotspots reviewed) are
+# governed centrally on the SonarQube server, so a team can't quietly lower
+# the bar in repo config.
+#
+# Requires: 'sonarqube' service connection + SonarQube extension installed
+# in the Azure DevOps organization.
+parameters:
+  - name: serviceConnection
+    type: string
+    default: 'sonarqube'
+  - name: projectKey
+    type: string
+    default: 'azure-security-pipeline'
+
+steps:
+  - task: SonarQubePrepare@7
+    displayName: 'SAST: prepare SonarQube analysis'
+    inputs:
+      SonarQube: ${{ parameters.serviceConnection }}
+      scannerMode: 'cli'
+      configMode: 'file'   # reads sonar-project.properties (reviewed in-repo)
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+
+  - script: |
+      set -euo pipefail
+      pip install --quiet -r app/requirements-dev.txt
+      cd app && python -m pytest tests/ --cov=src --cov-report=xml -q
+    displayName: 'Unit tests + coverage (feeds SonarQube)'
+
+  - task: SonarQubeAnalyze@7
+    displayName: 'SAST: run analysis'
+
+  - task: SonarQubePublish@7
+    displayName: 'SAST gate: wait for quality gate (breaks build on fail)'
+    inputs:
+      pollingTimeoutSec: '300'

@@ -1,0 +1,43 @@
+# Control: dependency (SCA) scanning with Trivy filesystem mode.
+# Resolves the pinned requirements and fails on HIGH/CRITICAL known
+# vulnerabilities. --ignore-unfixed keeps the gate actionable: it only fails
+# on CVEs that have a released fix we can actually upgrade to; unfixable ones
+# are still visible in the published report.
+parameters:
+  - name: scanPath
+    type: string
+    default: '$(Build.SourcesDirectory)/app'
+  - name: trivyVersion
+    type: string
+    default: '0.58.1'
+
+steps:
+  - script: |
+      set -euo pipefail
+      curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${{ parameters.trivyVersion }}/trivy_${{ parameters.trivyVersion }}_Linux-64bit.tar.gz" \
+        | tar -xz -C /usr/local/bin trivy
+      trivy --version
+    displayName: 'Install Trivy (pinned ${{ parameters.trivyVersion }})'
+
+  - script: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/trivy"
+      # Full report (all severities) as evidence…
+      trivy fs --scanners vuln,misconfig \
+        --format sarif \
+        --output "$(Build.ArtifactStagingDirectory)/trivy/deps.sarif" \
+        "${{ parameters.scanPath }}"
+      # …and the enforced gate.
+      trivy fs --scanners vuln,misconfig \
+        --severity HIGH,CRITICAL \
+        --ignore-unfixed \
+        --exit-code 1 \
+        "${{ parameters.scanPath }}"
+    displayName: 'SCA gate: trivy fs (fail on fixable HIGH/CRITICAL)'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish dependency scan SARIF'
+    condition: succeededOrFailed()
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)/trivy'
+      artifactName: 'CodeAnalysisLogs'

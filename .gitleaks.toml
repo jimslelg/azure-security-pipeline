@@ -1,0 +1,27 @@
+# GitLeaks configuration — extends the maintained default ruleset (Azure
+# keys, connection strings, JWTs, private keys, and 150+ other detectors).
+# Custom additions and allowlists below; every allowlist entry must explain
+# WHY it is safe, and is subject to code review like any other change.
+
+[extend]
+useDefault = true
+
+# Azure DevOps PATs are 52-char base32 — the default rules miss some shapes.
+[[rules]]
+id = "azure-devops-pat"
+description = "Azure DevOps personal access token"
+regex = '''(?i)(?:ado|azdo|devops)[\w\-]*(?:token|pat)['"\s:=]+[a-z2-7]{52}'''
+keywords = ["pat", "token"]
+
+[allowlist]
+description = "Reviewed non-secrets"
+paths = [
+  # Pinned dependency hashes and lock material look high-entropy but are public.
+  '''terraform/.terraform.lock.hcl''',
+]
+regexes = [
+  # Azure built-in policy definition GUIDs referenced in IaC are public identifiers.
+  '''policyDefinitions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}''',
+  # Docker image digests are public content hashes, not credentials.
+  '''sha256:[0-9a-f]{64}''',
+]

@@ -1,0 +1,38 @@
+# Control: OSS license compliance.
+# Allowlist model: only licenses legal has pre-approved may ship. A new
+# dependency with a copyleft license (GPL/AGPL) fails the build instead of
+# silently creating a distribution obligation. The allowlist is code-reviewed
+# here — changing it is a visible, auditable act.
+parameters:
+  - name: requirementsFile
+    type: string
+    default: '$(Build.SourcesDirectory)/app/requirements.txt'
+  - name: allowedLicenses
+    type: string
+    default: 'MIT License;BSD License;Apache Software License;Python Software Foundation License;ISC License (ISCL);Mozilla Public License 2.0 (MPL 2.0)'
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+
+  - script: |
+      set -euo pipefail
+      pip install --quiet pip-licenses
+      pip install --quiet -r "${{ parameters.requirementsFile }}"
+
+      mkdir -p "$(Build.ArtifactStagingDirectory)/licenses"
+      pip-licenses --format=markdown --with-urls \
+        --output-file "$(Build.ArtifactStagingDirectory)/licenses/report.md"
+
+      # Gate: anything outside the allowlist fails.
+      pip-licenses --fail-on-license-mismatch \
+        --allow-only "${{ parameters.allowedLicenses }}"
+    displayName: 'License gate: pip-licenses allowlist'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish license inventory'
+    condition: succeededOrFailed()
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)/licenses'
+      artifactName: 'license-report'

@@ -1,0 +1,45 @@
+# Control: container image scanning (Trivy).
+# Scans the ACTUAL image about to be pushed — OS packages AND app layers —
+# plus image misconfiguration checks (running as root, missing USER, etc.).
+# Runs BEFORE the push: a vulnerable image never reaches the registry, so
+# there is no window where it could be pulled.
+parameters:
+  - name: imageRef
+    type: string
+  - name: trivyVersion
+    type: string
+    default: '0.58.1'
+
+steps:
+  - script: |
+      set -euo pipefail
+      curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${{ parameters.trivyVersion }}/trivy_${{ parameters.trivyVersion }}_Linux-64bit.tar.gz" \
+        | tar -xz -C /usr/local/bin trivy
+    displayName: 'Install Trivy (pinned ${{ parameters.trivyVersion }})'
+
+  - script: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/trivy-image"
+
+      # Evidence: full report, all severities, plus an SBOM of what we ship.
+      trivy image --format sarif \
+        --output "$(Build.ArtifactStagingDirectory)/trivy-image/image.sarif" \
+        "${{ parameters.imageRef }}"
+      trivy image --format cyclonedx \
+        --output "$(Build.ArtifactStagingDirectory)/trivy-image/sbom.cdx.json" \
+        "${{ parameters.imageRef }}"
+
+      # Gate: fixable HIGH/CRITICAL vulnerabilities block the push.
+      trivy image \
+        --severity HIGH,CRITICAL \
+        --ignore-unfixed \
+        --exit-code 1 \
+        "${{ parameters.imageRef }}"
+    displayName: 'Container gate: trivy image + SBOM (pre-push)'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish image scan + SBOM'
+    condition: succeededOrFailed()
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)/trivy-image'
+      artifactName: 'CodeAnalysisLogs'

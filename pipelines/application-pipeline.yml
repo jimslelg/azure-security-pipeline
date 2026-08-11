@@ -1,0 +1,96 @@
+# Application pipeline — every stage is a security gate; an image only
+# reaches ACR after ALL of them pass.
+#
+#   SecurityScan   gitleaks · SCA · SAST · licenses   (parallel jobs, fail fast)
+#   Build          docker build → trivy image scan → push (main only, OIDC)
+#
+# Phase 5 extends this file with signing and the gated deployment stages.
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [app/**, pipelines/application-pipeline.yml]
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include: [app/**]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: serviceConnection
+    value: 'sc-azsecpipe-oidc'
+  - name: acrLoginServer
+    value: 'acrazsecpipedev.azurecr.io'
+  - name: imageRepository
+    value: 'inventory-api'
+  - name: imageTag
+    value: '$(Build.SourceVersion)'   # immutable, traceable to the exact commit
+  - name: imageRef
+    value: '$(acrLoginServer)/$(imageRepository):$(imageTag)'
+
+stages:
+  # ── Stage 1: four independent security gates, run in parallel ────────────
+  - stage: SecurityScan
+    displayName: 'Application Security Gates'
+    jobs:
+      - job: secrets
+        displayName: 'Secret scanning (GitLeaks)'
+        steps:
+          - template: templates/security/gitleaks-scan.yml
+
+      - job: dependencies
+        displayName: 'Dependency scanning (Trivy SCA)'
+        steps:
+          - template: templates/security/dependency-scan.yml
+
+      - job: sast
+        displayName: 'SAST (SonarQube)'
+        steps:
+          - template: templates/security/sonarqube-sast.yml
+
+      - job: licenses
+        displayName: 'License compliance'
+        steps:
+          - template: templates/security/license-compliance.yml
+
+  # ── Stage 2: build, scan the built image, then (and only then) push ──────
+  - stage: Build
+    displayName: 'Secure Build'
+    dependsOn: SecurityScan
+    jobs:
+      - job: build_scan_push
+        displayName: 'build · scan · push'
+        steps:
+          - script: |
+              set -euo pipefail
+              docker build \
+                --tag "$(imageRef)" \
+                --label "org.opencontainers.image.revision=$(Build.SourceVersion)" \
+                --label "org.opencontainers.image.source=$(Build.Repository.Uri)" \
+                app/
+            displayName: 'docker build (provenance labels)'
+
+          - template: templates/security/trivy-image-scan.yml
+            parameters:
+              imageRef: '$(imageRef)'
+
+          # Push only from main: PR builds prove the image is clean but never
+          # produce a publishable artifact.
+          - task: AzureCLI@2
+            displayName: 'Push to ACR (OIDC, main only)'
+            condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr login --name "${ACR%%.*}"
+                docker push "$(imageRef)"
+            env:
+              ACR: $(acrLoginServer)
