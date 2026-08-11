@@ -1,0 +1,16 @@
+# Control: IaC syntax/type validation.
+# Catches invalid resource arguments, bad references, and type errors before
+# anything touches Azure. Runs with -backend=false so validation needs no
+# cloud credentials at all — the PR stage stays zero-privilege.
+parameters:
+  - name: workingDirectory
+    type: string
+    default: '$(Build.SourcesDirectory)/terraform'
+
+steps:
+  - script: |
+      set -euo pipefail
+      terraform init -backend=false -input=false
+      terraform validate
+    displayName: 'IaC gate: terraform validate'
+    workingDirectory: ${{ parameters.workingDirectory }}

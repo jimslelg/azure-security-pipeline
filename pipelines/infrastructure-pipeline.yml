@@ -1,0 +1,181 @@
+# Infrastructure pipeline — validates, plans, and applies the Terraform
+# platform with security gates at every stage.
+#
+# Stage flow:
+#   Validate (zero cloud credentials)          → fmt, validate, tflint, checkov
+#   Plan     (read via OIDC, plan is evidence) → terraform plan, publish artifact
+#   Apply    (dev, environment-gated)          → apply the REVIEWED plan file
+#   Verify   (post-deploy)                     → Azure Policy compliance gate
+#
+# Security properties of the pipeline itself:
+#   - The Validate stage needs no service connection: PRs from any branch can
+#     run it without touching Azure.
+#   - Plan and Apply authenticate via a workload-identity service connection
+#     (OIDC federation, no stored secret).
+#   - Apply consumes the exact plan file produced by Plan (artifact hand-off),
+#     so what was reviewed is what is applied — no TOCTOU re-plan.
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform/**, pipelines/infrastructure-pipeline.yml]
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform/**]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: terraformVersion
+    value: '1.9.8'
+  - name: serviceConnection
+    value: 'sc-azsecpipe-oidc'         # ADO service connection using workload identity federation
+  - name: environmentName
+    value: 'dev'
+  - name: resourceGroup
+    value: 'rg-azsecpipe-$(environmentName)'
+  - name: backendResourceGroup
+    value: 'rg-azsecpipe-tfstate'
+  - name: backendStorageAccount
+    value: 'stazsecpipetfstate'
+  - name: backendContainer
+    value: 'tfstate'
+
+stages:
+  # ── Stage 1: static security validation (no cloud access) ────────────────
+  - stage: Validate
+    displayName: 'IaC Security Validation'
+    jobs:
+      - job: static_checks
+        displayName: 'fmt · validate · tflint · checkov'
+        steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(terraformVersion) (pinned)'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - template: templates/security/terraform-fmt.yml
+          - template: templates/security/terraform-validate.yml
+          - template: templates/security/terraform-lint.yml
+          - template: templates/security/checkov-scan.yml
+
+  # ── Stage 2: plan with read-only intent, publish the plan as evidence ────
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    dependsOn: Validate
+    jobs:
+      - job: plan
+        displayName: 'terraform plan ($(environmentName))'
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'terraform plan (OIDC — no stored credentials)'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: '$(Build.SourcesDirectory)/terraform'
+              inlineScript: |
+                set -euo pipefail
+                export ARM_USE_OIDC=true
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+                terraform init -input=false \
+                  -backend-config="resource_group_name=$(backendResourceGroup)" \
+                  -backend-config="storage_account_name=$(backendStorageAccount)" \
+                  -backend-config="container_name=$(backendContainer)" \
+                  -backend-config="key=$(environmentName).tfstate"
+
+                terraform plan -input=false -out=tfplan \
+                  -var-file="environments/$(environmentName).tfvars"
+
+                # Human-readable copy for the approval review in the Apply gate.
+                terraform show -no-color tfplan > tfplan.txt
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish plan artifact (review evidence)'
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/terraform/tfplan'
+              artifactName: 'tfplan-$(environmentName)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish readable plan'
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/terraform/tfplan.txt'
+              artifactName: 'tfplan-$(environmentName)-readable'
+
+  # ── Stage 3: apply the reviewed plan, gated by the ADO Environment ────────
+  - stage: Apply
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    # PR builds stop at Plan: applying from an unmerged branch is forbidden.
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: apply
+        displayName: 'terraform apply ($(environmentName))'
+        # Approvals + branch-control checks live on the Environment resource,
+        # configured in Azure DevOps (see docs/security-controls.md).
+        environment: 'platform-$(environmentName)'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - download: current
+                  artifact: 'tfplan-$(environmentName)'
+
+                - task: AzureCLI@2
+                  displayName: 'terraform apply (exact reviewed plan)'
+                  inputs:
+                    azureSubscription: $(serviceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    workingDirectory: '$(Build.SourcesDirectory)/terraform'
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_USE_OIDC=true
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_OIDC_TOKEN="$idToken"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+                      terraform init -input=false \
+                        -backend-config="resource_group_name=$(backendResourceGroup)" \
+                        -backend-config="storage_account_name=$(backendStorageAccount)" \
+                        -backend-config="container_name=$(backendContainer)" \
+                        -backend-config="key=$(environmentName).tfstate"
+
+                      # Apply ONLY the plan file that was reviewed — never re-plan here.
+                      terraform apply -input=false \
+                        "$(Pipeline.Workspace)/tfplan-$(environmentName)/tfplan"
+
+  # ── Stage 4: verify the deployed estate against Azure Policy ─────────────
+  - stage: Verify
+    displayName: 'Post-Deploy Compliance'
+    dependsOn: Apply
+    jobs:
+      - job: policy_compliance
+        displayName: 'Azure Policy compliance gate'
+        steps:
+          - template: templates/security/azure-policy-check.yml
+            parameters:
+              serviceConnection: $(serviceConnection)
+              resourceGroup: $(resourceGroup)

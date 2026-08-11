@@ -1,0 +1,27 @@
+# Control: Terraform linting (TFLint + azurerm ruleset).
+# Goes beyond validate: flags deprecated arguments, invalid VM sizes/regions,
+# unused declarations, and provider-specific mistakes that would otherwise
+# surface as runtime failures — or silently weaken the deployed posture.
+parameters:
+  - name: workingDirectory
+    type: string
+    default: '$(Build.SourcesDirectory)/terraform'
+  - name: tflintVersion
+    type: string
+    default: 'v0.53.0'
+
+steps:
+  - script: |
+      set -euo pipefail
+      curl -sSLo /tmp/tflint.zip \
+        "https://github.com/terraform-linters/tflint/releases/download/${{ parameters.tflintVersion }}/tflint_linux_amd64.zip"
+      unzip -o /tmp/tflint.zip -d /usr/local/bin
+      tflint --version
+    displayName: 'Install TFLint (pinned ${{ parameters.tflintVersion }})'
+
+  - script: |
+      set -euo pipefail
+      tflint --init --config "$(Build.SourcesDirectory)/.tflint.hcl"
+      tflint --recursive --config "$(Build.SourcesDirectory)/.tflint.hcl" --format compact
+    displayName: 'IaC gate: tflint'
+    workingDirectory: ${{ parameters.workingDirectory }}

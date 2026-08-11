@@ -1,0 +1,39 @@
+# Control: policy-as-code scan of the IaC (Checkov).
+# Evaluates every Terraform resource against CIS/Azure security benchmarks
+# BEFORE plan/apply — public network exposure, missing encryption, weak TLS,
+# over-permissive identities are all build failures, not audit findings.
+# Findings are published as SARIF so they surface in the Scans tab / code view.
+parameters:
+  - name: workingDirectory
+    type: string
+    default: '$(Build.SourcesDirectory)/terraform'
+  - name: configFile
+    type: string
+    default: '$(Build.SourcesDirectory)/.checkov.yaml'
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+    displayName: 'Use Python 3.12'
+
+  - script: pip install --quiet checkov
+    displayName: 'Install Checkov'
+
+  - script: |
+      set -euo pipefail
+      mkdir -p "$(Build.ArtifactStagingDirectory)/checkov"
+      checkov \
+        --config-file "${{ parameters.configFile }}" \
+        --directory "${{ parameters.workingDirectory }}" \
+        --output cli \
+        --output sarif \
+        --output-file-path console,"$(Build.ArtifactStagingDirectory)/checkov/results.sarif"
+    displayName: 'IaC gate: checkov (fails on any unskipped finding)'
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Checkov SARIF report'
+    condition: succeededOrFailed()   # publish evidence even when the gate fails
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)/checkov'
+      artifactName: 'CodeAnalysisLogs'  # name recognized by the SARIF scans tab extension

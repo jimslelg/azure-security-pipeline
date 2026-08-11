@@ -1,0 +1,22 @@
+# Checkov policy-as-code configuration.
+# Philosophy: the gate is DENY by default — any failed check fails the build.
+# Exceptions are code-reviewed here, with justification, never silenced ad hoc
+# on the CLI. (soft-fail is intentionally absent = false.)
+framework:
+  - terraform
+compact: true
+quiet: true          # only print failed checks in CI logs
+download-external-modules: false
+
+skip-check:
+  # CKV_AZURE_117 (AKS disk encryption set): platform-managed keys are
+  # acceptable for this workload's data classification; CMK adds a Key Vault
+  # dependency cycle for no modeled threat here.
+  - CKV_AZURE_117
+  # CKV_AZURE_115 (AKS private cluster): the API server is instead restricted
+  # via authorized IP ranges + Entra ID auth; a fully private control plane
+  # would require self-hosted build agents, out of scope for this reference.
+  - CKV_AZURE_115
+  # CKV_AZURE_4 is superseded by Defender for Containers + oms_agent, both
+  # enabled; the check predates the current agent layout.
+  - CKV_AZURE_4

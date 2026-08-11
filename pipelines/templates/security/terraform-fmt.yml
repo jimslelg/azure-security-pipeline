@@ -1,0 +1,13 @@
+# Control: IaC formatting gate.
+# Why it's a security control and not just style: unformatted diffs hide
+# malicious or accidental changes in noise. Canonical formatting keeps every
+# infrastructure diff minimal and reviewable — review quality IS a control.
+parameters:
+  - name: workingDirectory
+    type: string
+    default: '$(Build.SourcesDirectory)/terraform'
+
+steps:
+  - script: terraform fmt -check -recursive -diff
+    displayName: 'IaC gate: terraform fmt'
+    workingDirectory: ${{ parameters.workingDirectory }}

@@ -1,0 +1,45 @@
+# Control: Azure Policy compliance validation.
+# Checkov checks what we're ABOUT to deploy; this checks what actually EXISTS.
+# It triggers an on-demand compliance evaluation of the platform resource
+# group and fails the run if any resource violates an assigned policy —
+# catching drift introduced outside the pipeline (portal edits, CLI, RBAC gaps).
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: resourceGroup
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Compliance gate: Azure Policy state'
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        RG="${{ parameters.resourceGroup }}"
+
+        echo "Triggering on-demand policy evaluation for $RG ..."
+        az policy state trigger-scan --resource-group "$RG" --no-wait
+        # trigger-scan is eventually consistent; a bounded wait keeps runs fast
+        # while still evaluating reasonably fresh state.
+        sleep 60
+
+        echo "Summarizing compliance state ..."
+        NON_COMPLIANT=$(az policy state summarize \
+          --resource-group "$RG" \
+          --query "results.nonCompliantResources" -o tsv)
+
+        echo "Non-compliant resources: ${NON_COMPLIANT:-0}"
+
+        if [ "${NON_COMPLIANT:-0}" -gt 0 ]; then
+          echo "##[error]Azure Policy reports ${NON_COMPLIANT} non-compliant resource(s):"
+          az policy state list \
+            --resource-group "$RG" \
+            --filter "complianceState eq 'NonCompliant'" \
+            --query "[].{resource:resourceId, policy:policyDefinitionName}" \
+            -o table
+          exit 1
+        fi
+        echo "All resources compliant with assigned policies."
