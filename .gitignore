@@ -1,0 +1,52 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl.backup
+.terraformrc
+terraform.rc
+
+# Secrets & local config — never commit credentials of any kind
+*.pem
+*.key
+*.pfx
+*.p12
+.env
+.env.*
+!.env.example
+secrets/
+local.settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Scanner outputs (generated per pipeline run, not source)
+checkov-report/
+trivy-report/
+gitleaks-report/
+*.sarif
+license-report/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
